@@ -182,21 +182,27 @@ tasks_available(ValveIdStart, TakenTasks, #{} = TravelTimes, #world{ minutes_rem
     fun (Valve) ->
       ValveIdEnd = Valve#valve.id,
       #{ { ValveIdStart, ValveIdEnd } := TravelTime } = TravelTimes,
-      {ValveIdEnd, TravelTime}
+      {ValveIdEnd, TravelTime, (MinutesRemaining - TravelTime - 1) * Valve#valve.flow_rate}
     end,
     ValvesClosed
   ),
-  lists:filter(
-    fun ({ValveIdEnd, Minutes}) ->
-      Minutes =< MinutesRemaining andalso not lists:member(ValveIdEnd, TakenTasks)
+  Filtered = lists:filter(
+    fun ({ValveIdEnd, _, Benefit}) ->
+      Benefit > 0 andalso not lists:member(ValveIdEnd, TakenTasks)
     end,
     ValvesClosedWithMinutesToOpen
+  ),
+  lists:sort(
+    fun ({_, _, BenefitA}, {_, _, BenefitB}) ->
+      BenefitA >= BenefitB
+    end,
+    Filtered
   ).
 
 actor_assign_task(#actor{ location = Location, next_location = nil } = Actor, TakenTasks, TravelTimes, #world{} = World) ->
   Tasks = tasks_available(Location, TakenTasks, TravelTimes, World),
   lists:map(
-    fun ({Destination, Minutes}) ->
+    fun ({Destination, Minutes, _}) ->
       Actor#actor{
         next_location = Destination,
         travel_minutes_remaining = Minutes
@@ -287,6 +293,29 @@ score_if_done(#sim{ world = #world{ minutes_remaining = 0, pressure_released = P
 score_if_done(#sim{}) ->
   0.
 
+% Compute a perfect-world score that assumes you can teleport to the next-largest closed valve. If this score is less
+% than the current high score, we know we can discard the sim, because even with the perfect cave layout it will never
+% succeed:
+heuristic_score(#sim{ world = #world{ pressure_released = PressureReleased, minutes_remaining = MinutesRemaining } = World }) ->
+  ValvesClosed = lists:sort(
+    fun (A, B) ->
+      A#valve.flow_rate >= B#valve.flow_rate
+    end,
+    valves_closed(World)
+  ),
+  {RemainingValveScore, _} = lists:foldl(
+    fun (Valve, {ScoreAccum, Index}) ->
+      Incr = Valve#valve.flow_rate * (MinutesRemaining - Index),
+      case Incr =< 0 of
+        true -> {ScoreAccum, Index + 2};
+        false -> {ScoreAccum + Incr, Index + 2}
+      end
+    end,
+    {0, 1},
+    ValvesClosed
+  ),
+  PressureReleased + RemainingValveScore.
+
 search_by_task2(#world{} = World) ->
   TravelTimes = travel_times_precompute(World),
   Sim = #sim{
@@ -296,26 +325,20 @@ search_by_task2(#world{} = World) ->
       #actor{ location = <<"AA">>, next_location = nil, travel_minutes_remaining = 0 }
     ]
   },
-  erlang:put(search_by_task2_count, 0),
   search_by_task2(0, TravelTimes, sim_tasks_assign(Sim, TravelTimes)).
 
 search_by_task2(HighScore, _, []) ->
-  io:format("Iterations: ~p\n", [erlang:get(search_by_task2_count)]),
   HighScore;
 search_by_task2(
     HighScore,
     #{} = TravelTimes,
     [#sim{} = Sim | SimsRemainToCheck]
 ) ->
-  erlang:put(search_by_task2_count, erlang:get(search_by_task2_count) + 1),
   SimUpdated = sim_tick(Sim),
   SimsNext = sim_tasks_assign(SimUpdated, TravelTimes),
   SimsNextFiltered = lists:filter(
     fun (SimNext) ->
-      case score_if_done(SimNext) of
-        0 -> true;
-        _ -> false
-      end
+      heuristic_score(SimNext) >= HighScore andalso score_if_done(SimNext) == 0
     end,
     SimsNext
   ),
@@ -330,10 +353,6 @@ search_by_task2(
     HighScore,
     SimsNext
   ),
-  case HighScore /= HighScoreNext of
-    true -> io:format("~p (~p remaining)\n", [HighScoreNext, length(SimsRemainToCheck)]);
-    false -> ok
-  end,
   search_by_task2(HighScoreNext, TravelTimes, SimsNextFiltered ++ SimsRemainToCheck).
 
 day_16_part_2(FilePath) ->
