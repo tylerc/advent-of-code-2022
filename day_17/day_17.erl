@@ -168,6 +168,20 @@ simulate_with_cache(Remaining, Period, JetsCurrent, RocksCurrent, Cache, Arena, 
       AddedBuildHeight + simulate_with_cache(Remaining - IterationsToRun, Period, JetsCurrentNext, RocksCurrentNext, CacheNext, ArenaNext, Jets, Rocks)
   end.
 
+find_period_multiplier(0, _, _, _, _, _, _, _) ->
+  1;
+find_period_multiplier(Remaining, Iteration, JetsCurrent, RocksCurrent, Cache, Arena, Jets, Rocks) ->
+  Topology = topology(Arena),
+  IterationsToRun = min(Remaining, 5),
+  case Cache of
+    #{ {Topology, IterationsToRun, JetsCurrent, RocksCurrent} := IterationLast } ->
+      Iteration - IterationLast;
+    #{} ->
+      {JetsCurrentNext, RocksCurrentNext, ArenaNext} = simulate(IterationsToRun, nil, JetsCurrent, RocksCurrent, Arena, Jets, Rocks),
+      CacheNext = Cache#{ {Topology, IterationsToRun, JetsCurrent, RocksCurrent} => Iteration },
+      find_period_multiplier(Remaining - IterationsToRun, Iteration + 1, JetsCurrentNext, RocksCurrentNext, CacheNext, ArenaNext, Jets, Rocks)
+  end.
+
 simulate(0, _, JetsCurrent, RocksCurrent, Arena, _, _) ->
   {JetsCurrent, RocksCurrent, Arena};
 simulate(Remaining, Falling, [], RocksCurrent, Arena, Jets, Rocks) ->
@@ -215,6 +229,5 @@ day_17_part_2(FilePath) ->
     [{0, 0}, {1, 0}, {2, 0}, {3, 0}], % 0-4
     [{0, 0}, {0, 1}, {1, 0}, {1, 1}] % 0-2
   ],
-  io:format("size of jets: ~p\n", [length(Jets)]),
-  % 5 * 7 for example; 5 * 348 for real input:
-  simulate_with_cache(1000000000000, 5 * 348, [], [], #{}, #{}, Jets, Rocks).
+  PeriodMultiplier = find_period_multiplier(1000000000000, 1, [], [], #{}, #{}, Jets, Rocks),
+  simulate_with_cache(1000000000000, 5 * PeriodMultiplier, [], [], #{}, #{}, Jets, Rocks).
